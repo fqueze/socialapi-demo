@@ -72,24 +72,28 @@ function guestLogin(event) {
   event.preventDefault();
 }
 
-function signedIn(aEmail) {
+function signedIn(aData) {
+  aData = JSON.parse(aData);
+  var email = aData.user;
   $("#guest").hide();
   $("#signin").hide();
   var end = location.href.indexOf("/sidebar.htm");
   var baselocation = location.href.substr(0, end);
   var userdata = {
     portrait: baselocation + "/user.png",
-    userName: aEmail,
-    dispayName: aEmail,
+    userName: email,
+    dispayName: email,
+    sessionID: aData.sessionID,
     profileURL: baselocation + "/user.html"
   };
-  document.cookie="userdata="+JSON.stringify(userdata);
-  window.addEventListener("unload", function() {
-    document.cookie = 'userdata=; expires=Fri, 27 Jul 2001 02:47:11 UTC; path=/';
-  });
+  var data = JSON.stringify(userdata);
+  document.cookie =
+    "userdata=" + data + "; expires=Fri, 31 Dec 9999 23:59:59 GMT";
+  navigator.mozSocial.getWorker()
+           .port.postMessage({topic: "user.login", data: data});
 
-  gUsername = aEmail;
-  gContacts[aEmail] = $("<li>"); // Avoid displaying the user in the contact list.
+  gUsername = email;
+  gContacts[email] = $("<li>"); // Avoid displaying the user in the contact list.
 }
 
 function onSignout() {
@@ -104,6 +108,9 @@ function onSignout() {
 function signedOut() {
   delete gContacts[gUsername];
   gUsername = "";
+  document.cookie = 'userdata=; expires=Fri, 27 Jul 2001 02:47:11 UTC; path=/';
+  navigator.mozSocial.getWorker()
+           .port.postMessage({topic: "user.logout", data: null});
 
   reload();
 }
@@ -289,76 +296,9 @@ function hideVideo(aDoc) {
   aDoc.getElementById("chat").setAttribute("style", "top: 0; height: 246px;");
 }
 
-function setupEventSource() {
-  var source = new EventSource("events?source=sidebar");
-  source.onerror = function(e) {
-    reload();
-  };
 
-  source.addEventListener("ping", function(e) {}, false);
-
-  source.addEventListener("userjoined", function(e) {
-    if (e.data in gContacts) {
-      return;
-    }
-    var contact = $('<li class="contact">');
-    // Add the picture
-    contact.append($('<div class="userName">' + e.data + '</div>'));
-    var userButtons = $('<div class="userButtons">');
-    var userButton = $('<button class="userButtonVideo" user="' + e.data + '" call="video"/>');
-    userButton.click(onContactClick);
-    userButtons.append(userButton);
-    userButton = $('<button class="userButtonAudio" user="' + e.data + '" call="audio"/>');
-    userButton.click(onContactClick);
-    userButtons.append(userButton);
-    contact.append(userButtons);
-    $("#contacts").append(contact);
-    gContacts[e.data] = contact;
-  }, false);
-
-  source.addEventListener("userleft", function(e) {
-    if (!gContacts[e.data]) {
-      return;
-    }
-    gContacts[e.data].remove();
-    delete gContacts[e.data];
-  }, false);
-
-  source.addEventListener("offer", function(e) {
-    var data = JSON.parse(e.data);
-    var from = data.from;
-
-    // Silently drop calls from people already calling us.
-    // The server won't cancel the ongoing call if there's a pending call.
-    if (from in gChats) {
-      stopCall(from);
-      return;
-    }
-
-    openChat(from, function(aWin) {
-      var win = gChats[from].win;
-      var doc = win.document;
-      var offer = JSON.parse(data.request);
-      offer.sdp = offer.sdp.split("m=").filter(function(s) {
-        return !s.startsWith("video") || s.indexOf("a=recvonly") == -1;
-      }).join("m=");
-      gChats[from].audioOnly = offer.sdp.indexOf("m=video") == -1;
-
-      doc.getElementById("callAnswer").style.display = "block";
-      doc.getElementById("reject").onclick = function() {
-        win.close();
-      };
-      doc.getElementById("accept").onclick = function() {
-        doc.getElementById("callAnswer").style.display = "none";
-        var chat = gChats[from];
-        chat.pc = webrtcMedia.handleOffer(data, win, chat.audioOnly,
-                                          onConnection, setupFileSharing);
-        if (chat.audioOnly)
-          hideVideo(chat.win.document);
-      };
-    });
-  }, false);
-
+/*
+  // TODO: reimplement somewhere else.
   source.addEventListener("answer", function(e) {
     var data = JSON.parse(e.data);
     var chat = gChats[data.from];
@@ -402,19 +342,13 @@ function setupEventSource() {
     delete gChats[data.from];
     chat.win.close();
   });
-
-  window.addEventListener("beforeunload", function() {
-    source.onerror = null;
-    source.close();
-  }, true);
-}
+*/
 
 function userIsConnected(userdata) {
   $("#userid").text(userdata.userName);
   $("#usericon").attr("src", userdata.portrait);
   $("#signedin").show();
   $("#content").show();
-  setupEventSource();
 }
 
 function userIsDisconnected() {
@@ -425,6 +359,31 @@ function userIsDisconnected() {
 }
 
 var messageHandlers = {
+  "userjoined": function(data) {
+    if (data in gContacts) {
+      return;
+    }
+    var contact = $('<li class="contact">');
+    // Add the picture
+    contact.append($('<div class="userName">' + data + '</div>'));
+    var userButtons = $('<div class="userButtons">');
+    var userButton = $('<button class="userButtonVideo" user="' + data + '" call="video"/>');
+    userButton.click(onContactClick);
+    userButtons.append(userButton);
+    userButton = $('<button class="userButtonAudio" user="' + data + '" call="audio"/>');
+    userButton.click(onContactClick);
+    userButtons.append(userButton);
+    contact.append(userButtons);
+    $("#contacts").append(contact);
+    gContacts[data] = contact;
+  },
+  "userleft": function(data) {
+    if (!gContacts[data]) {
+      return;
+    }
+    gContacts[data].remove();
+    delete gContacts[data];
+  },
   "worker.connected": function(data) {
     // our port has connected with the worker, do some initialization
     // worker.connected is our own custom message

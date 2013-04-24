@@ -20,15 +20,16 @@ function guestLogin(event) {
   event.preventDefault();
 }
 
-function signedIn(aEmail) {
-  gUsername = aEmail;
-  $("#useridbox").text("Welcome " + aEmail + "!");
+function signedIn(aData) {
+  var email = JSON.parse(aData).user;
+  gUsername = email;
+  $("#useridbox").text("Welcome " + email + "!");
   $("#useridbox").show();
   $("#nouserid").hide();
   $("#signin").hide();
   $("#guest").hide();
   $("#signout").show();
-  gContacts[aEmail] = $("<li>"); // Avoid displaying the user in the contact list.
+  gContacts[email] = $("<li>"); // Avoid displaying the user in the contact list.
   setupEventSource();
 }
 

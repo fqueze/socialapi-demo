@@ -17,6 +17,7 @@ app.use(express.session());
 app.use(express.static(__dirname + "/static"));
 
 var users = {};
+var validSessionIDs = {};
 var port = process.env.VMC_APP_PORT || process.env.PORT || 5000;
 var audience;
 if (process.env.AUDIENCE)
@@ -30,8 +31,14 @@ else
 // and "userleft".
 
 app.get("/events", function(req, res) {
-  var user = req.session.user;
+  // Re-establish sessions after browser restarts
+  if (req.query["source"] == "worker" && !req.session.user) {
+    var sessionID = req.query["sessionID"];
+    if (validSessionIDs.hasOwnProperty(sessionID))
+      req.session.user = validSessionIDs[sessionID];
+  }
 
+  var user = req.session.user;
   if (!user) {
     debugLog("/events connection rejected (unauthorized)");
     res.send(401, "Unauthorized, events access denied");
@@ -78,6 +85,18 @@ app.get("/events", function(req, res) {
   debugLog("There are now now " + Object.keys(users).length + " online users");
 });
 
+app.get("/session", function(req, res) {
+  // Re-establish sessions after browser restarts. Unfortunately, this
+  // isn't saved correctly when done in /events (saving likely happens
+  // only when the request ends).
+  if (!req.session.user) {
+    var sessionID = req.query["sessionID"];
+    if (validSessionIDs.hasOwnProperty(sessionID))
+      req.session.user = validSessionIDs[sessionID];
+  }
+  res.send(200);
+});
+
 function findConnectionsForUser(aUser) {
   return Object.keys(users)
                .map(function(k) { return users[k]; })
@@ -110,7 +129,8 @@ app.post("/call", function(req, res) {
 app.post("/login", function(req, res) {
   if (req.session.user) {
     debugLog("User session for " + req.session.user + " already created!");
-    res.send(200, req.session.user);
+    res.send(200, JSON.stringify({user: req.session.user,
+                                  sessionID: req.sessionID}));
     return;
   }
   if (!req.body.assertion) {
@@ -134,7 +154,8 @@ app.post("/login", function(req, res) {
     req.session.regenerate(function() {
       debugLog("Creating user session for " + user);
       req.session.user = user;
-      res.send(200, user);
+      validSessionIDs[req.sessionID] = user;
+      res.send(200, JSON.stringify({user: user, sessionID: req.sessionID}));
     });
   }
 });
@@ -157,6 +178,11 @@ function logout(req, res) {
     var keys = Object.keys(users);
     for (var i = 0; i < keys.length; ++i)
       channelWrite(users[keys[i]].response, "userleft", user);
+  }
+
+  if (res) {
+    // If an explicit /logout request was made, invalidate the session id.
+    delete validSessionIDs[req.sessionID];
   }
 
   req.session.destroy(function() {

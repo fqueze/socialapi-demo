@@ -63,6 +63,72 @@ onconnect = function(e) {
 }
 
 var userData = {};
+var eventSource = null;
+var gContacts = {};
+var gChats = {};
+var gPendingChats = [];
+
+function setUserData(aUserData) {
+  // avoid recreating the event source if we already have one for
+  // the correct user (ie when the sidebar is reopened / a second
+  // window is opened.)
+  if (aUserData && userData.userName == aUserData.userName)
+    return;
+
+  apiPort.postMessage({topic: "social.user-profile", data: aUserData});
+  broadcast('social.user-profile', aUserData);
+
+  if (!aUserData) {
+    userData = {};
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
+    return;
+  }
+
+  userData = aUserData;
+
+  eventSource = new EventSource("events?source=worker&sessionID=" + encodeURIComponent(userData.sessionID));
+
+  // Hack to ensure the user is saved in the session immediately.
+  var req = new XMLHttpRequest();
+  req.open("get", "session?sessionID=" + encodeURIComponent(userData.sessionID), true);
+  req.send();
+
+  eventSource.addEventListener("userjoined", function(e) {
+    if (e.data in gContacts) {
+      return;
+    }
+    gContacts[e.data] = true;
+    broadcast("userjoined", e.data);
+  }, false);
+
+  eventSource.addEventListener("userleft", function(e) {
+    if (!gContacts[e.data]) {
+      return;
+    }
+    delete gContacts[e.data];
+    broadcast("userleft", e.data);
+  }, false);
+
+  eventSource.addEventListener("offer", function(e) {
+    var data = JSON.parse(e.data);
+    var from = data.from;
+
+    // Silently drop calls from people already calling us.
+    // The server won't cancel the ongoing call if there's a pending call.
+    if (from in gChats) {
+//      stopCall(from);
+      return;
+    }
+
+    apiPort.postMessage({topic: "social.request-chat", data: "chatWindow.html"});
+    gPendingChats.push(e.data);
+    gChats[from] = true;
+  }, false);
+}
+
 // Messages from the sidebar and chat windows:
 var handlers = {
   'worker.connected': function(port, msg) {
@@ -70,7 +136,7 @@ var handlers = {
   },
   'worker.reload': function(port, msg) {
     broadcast(msg.topic, msg.data);
-    userData = {};
+    setUserData(null);
     apiPort.postMessage({topic: "social.user-profile", data: userData});
     broadcast('social.user-profile', userData);
     apiPort.postMessage({topic: 'social.reload-worker'});
@@ -78,45 +144,45 @@ var handlers = {
   'social.initialize': function(port, data) {
     //log("social.initialize called, capturing apiPort");
     apiPort = port;
+    apiPort.postMessage({topic: 'social.cookies-get'})
   },
   'broadcast.listen': function(port, data) {
-    if (data)
+    if (data) {
       _broadcastReceivers.push(port);
+      port.postMessage({topic: "social.user-profile", data: userData});
+    }
     else {
       var i = _broadcastReceivers.indexOf(port);
       if (i != -1)
         _broadcastReceivers.splice(i, 1);
     }
   },
+  'chat.listen': function(port, data) {
+    var offerData = gPendingChats.shift();
+    port.postMessage({topic: "offer", data: offerData});
+    gChats[JSON.parse(offerData).from] = port;
+  },
+
+  'user.login': function(port, msg) {
+    setUserData(JSON.parse(msg.data));
+    broadcast('social.user-profile', userData);
+  },
+  'user.logout': function(port, msg) {
+    setUserData(null);
+  },
 
   'social.user-recommend-prompt': function(port, msg) {},
   'social.cookies-get-response': function(port, msg) {
     try {
-    let cookies = msg.data;
-    let newUserData;
-    for (var i=0; i < cookies.length; i++) {
-      if (cookies[i].name == "userdata") {
-        newUserData = cookies[i].value ? JSON.parse(cookies[i].value) : {};
-        break;
+      let cookies = msg.data;
+      for (var i=0; i < cookies.length; i++) {
+        if (cookies[i].name == "userdata") {
+          setUserData(cookies[i].value ? JSON.parse(cookies[i].value) : null);
+          break;
+        }
       }
-    }
-    if (!newUserData) {
-      userData = {};
-      return;
-    }
-    if (userData.userName != newUserData.userName) {
-      userData = newUserData;
-      port.postMessage({topic: "social.user-profile", data: userData});
-      broadcast('social.user-profile', userData);
-    }
     } catch(e) {
       dump(e.stack+"\n");
     }
   }
 }
-
-// lets watch for cookie updates here, polling kinda sucks
-function checkCookies() {
-  apiPort.postMessage({topic: 'social.cookies-get'});
-}
-setInterval(checkCookies, 1000);
